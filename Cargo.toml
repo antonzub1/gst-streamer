@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 actix-web = { version = "4.9.0", features = ["rustls"] }
+color-eyre = "0.6.3"
+eyre = "0.6.12"
 gstreamer = "0.23.4"
 tokio = { version = "1.43.0", features = ["macros", "rt-multi-thread", "tracing"] }
 tracing = "0.1.41"

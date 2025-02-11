@@ -1,5 +1,7 @@
 use std::{net::TcpListener, thread, time::Duration};
 use actix_web::{web::{self, Data}, App, HttpResponse, HttpServer, Responder};
+use color_eyre::Result;
+use eyre::eyre;
 use gstreamer::{glib::thread_guard::thread_id, message, prelude::*, Message, Structure};
 use tokio::{runtime, sync::{mpsc::channel, mpsc::Sender}};
 use tracing::{error, info, span, Level};
@@ -21,8 +23,9 @@ async fn send_message(tx: Data<Sender<Message>>) -> impl Responder {
 }
 
 
-fn main() {
-    gstreamer::init().expect("Failed to initialize GStreamer");
+fn main() -> Result<()> {
+    color_eyre::install()?;
+    gstreamer::init()?;
     tracing_subscriber::fmt().init();
 
 
@@ -33,23 +36,17 @@ fn main() {
     let mp = span!(Level::INFO, "main_thread", tid = %tid);
     let _main_span = mp.enter();
     info!("Start streaming.");
-    let pipeline = gstreamer::parse::launch("videotestsrc ! autovideosink")
-        .expect("Failed to parse a pipeline");
-    pipeline.set_state(gstreamer::State::Playing)
-        .expect("Failed to set the pipeline to the `Playing` state");
-    let bus = pipeline.bus().expect("Failed to get the bus for the pipeline");
+    let pipeline = gstreamer::parse::launch("videotestsrc ! autovideosink")?;
+    pipeline.set_state(gstreamer::State::Playing)?;
+    let bus = pipeline.bus().ok_or_else(|| eyre!("Failed to get a bus"))?;
     bus.add_signal_watch();
 
-    let (tx, mut rx) = channel::<Message>(1);
+    let (tx, mut rx) = channel::<Message>(10);
 
-    let streaming_thread = thread::spawn(move || {
+    let streaming_thread = thread::spawn(move || -> Result<()> {
         let tid = thread_id();
         let sp = span!(Level::INFO, "streaming_thread", tid = %tid);
         let _streaming_span = sp.enter();
-        if let Some(message) = rx.blocking_recv() {
-            bus.post(message).expect("Failed to post a message");
-            info!("Got a message from the messaging thread.");
-        }
 
         for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
 
@@ -72,19 +69,23 @@ fn main() {
                         info!("Got message from another thread: {:?}", structure);
                     }
                 }
-                _ => (),
+                _ => {
+                    if let Some(message) = rx.blocking_recv() {
+                        bus.post(message)?;
+                        info!("Got a message from the messaging thread.");
+                    }
+                },
             }
         }
-        pipeline.set_state(gstreamer::State::Null)
-            .expect("Failed to shutdown a pipeline");
+        pipeline.set_state(gstreamer::State::Null)?;
+        Ok(())
     });
 
 
     let rt = runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
-        .build()
-        .expect("Failed to create a runtime");
+        .build()?;
 
     let data = Data::new(tx);
 
@@ -95,10 +96,10 @@ fn main() {
             .route("/message", web::post().to(send_message))
             .app_data(data.clone())
     })
-    .listen(listener)
-    .expect("Failed to bind a listener")
+    .listen(listener)?
     .run();
 
-    rt.block_on(app_server).expect("Failed to run a server");
-    streaming_thread.join().expect("Failed to join streaming thread");
+    rt.block_on(app_server)?;
+    streaming_thread.join().unwrap()?;
+    Ok(())
 }
