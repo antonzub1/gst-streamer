@@ -3,23 +3,23 @@ use actix_web::{web::{self, Data}, App, HttpResponse, HttpServer, Responder};
 use color_eyre::Result;
 use eyre::eyre;
 use gstreamer::{glib::thread_guard::thread_id, message, prelude::*, Message, Structure};
-use tokio::{runtime, sync::{mpsc::channel, mpsc::Sender}};
+use tokio::{runtime, sync::{mpsc::channel, mpsc::Sender}, time::sleep};
 use tracing::{error, info, span, Level};
 
 async fn send_message(tx: Data<Sender<Message>>) -> impl Responder {
-        let tid = thread_id();
-        let sp = span!(Level::INFO, "messaging_thread", tid = %tid);
-        let _messaging_span = sp.enter();
-        let structure = Structure::builder("custom-message")
-            .field("key", "value")
-            .build();
-        let message = message::Application::new(structure);
-        info!("Sleep for 10 seconds before sending a message");
-        thread::sleep(Duration::from_secs(10));
-        info!("Wake up after 10 seconds and send message");
-        tx.send(message).await.unwrap();
-        info!("Sent a message from messaging thread.");
-        HttpResponse::Ok().finish()
+    let tid = thread::current().id();
+    let sp = span!(Level::INFO, "messaging_thread", tid = ?tid);
+    let _messaging_span = sp.enter();
+    let structure = Structure::builder("custom-message")
+        .field("key", "value")
+        .build();
+    let message = message::Application::new(structure);
+    info!("Sleep for 10 seconds before sending a message");
+    sleep(Duration::from_secs(10)).await;
+    info!("Wake up after 10 seconds and send message");
+    tx.send(message).await.unwrap();
+    info!("Sent a message from messaging thread.");
+    HttpResponse::Ok().finish()
 }
 
 
@@ -32,8 +32,8 @@ fn main() -> Result<()> {
     // let uri = "https://gstreamer.freedesktop.org/data/media/sintel_trailer-480p.webm";
     // let pipeline = gstreamer::parse::launch(&format!("playbin uri={uri}"))
     //     .expect("Failed to parse a pipeline");
-    let tid = thread_id();
-    let mp = span!(Level::INFO, "main_thread", tid = %tid);
+    let tid = thread::current().id();
+    let mp = span!(Level::INFO, "main_thread", tid = ?tid);
     let _main_span = mp.enter();
     info!("Start streaming.");
     let pipeline = gstreamer::parse::launch("videotestsrc ! autovideosink")?;
@@ -41,7 +41,7 @@ fn main() -> Result<()> {
     let bus = pipeline.bus().ok_or_else(|| eyre!("Failed to get a bus"))?;
     bus.add_signal_watch();
 
-    let (tx, mut rx) = channel::<Message>(10);
+    let (tx, mut rx) = channel::<Message>(1);
 
     let streaming_thread = thread::spawn(move || -> Result<()> {
         let tid = thread_id();
@@ -72,7 +72,6 @@ fn main() -> Result<()> {
                 _ => {
                     if let Some(message) = rx.blocking_recv() {
                         bus.post(message)?;
-                        info!("Got a message from the messaging thread.");
                     }
                 },
             }
